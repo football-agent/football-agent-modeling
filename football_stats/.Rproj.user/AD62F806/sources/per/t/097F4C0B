@@ -1,0 +1,25 @@
+{
+    "id": "097F4C0B",
+    "path": "D:/WiSe2021/football-agent-services/football_stats/lm.R",
+    "project_path": "lm.R",
+    "type": "r_source",
+    "hash": "1910754465",
+    "contents": "",
+    "dirty": false,
+    "created": 1639416497447.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "tempName": "Untitled1",
+        "cursorPosition": "151,0",
+        "scrollLine": "123"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1640861330,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1640861330509,
+    "read_only": false,
+    "read_only_alternatives": []
+}

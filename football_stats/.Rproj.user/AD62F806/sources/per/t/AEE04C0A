@@ -1,0 +1,32 @@
+{
+    "id": "AEE04C0A",
+    "path": null,
+    "project_path": null,
+    "type": "r_dataframe",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1640787296274.0,
+    "source_on_save": false,
+    "relative_order": 11,
+    "properties": {
+        "expression": "hyper_grid",
+        "caption": "hyper_grid",
+        "totalObservations": 64,
+        "displayedObservations": 64,
+        "variables": 2,
+        "cacheKey": "720C167A",
+        "object": "hyper_grid",
+        "environment": "",
+        "contentUrl": "grid_resource/gridviewer.html?env=&obj=hyper_grid&cache_key=720C167A&max_cols=50",
+        "preview": 0
+    },
+    "folds": "",
+    "lastKnownWriteTime": 7011295844748317218,
+    "encoding": "",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1640787296274,
+    "read_only": false,
+    "read_only_alternatives": []
+}

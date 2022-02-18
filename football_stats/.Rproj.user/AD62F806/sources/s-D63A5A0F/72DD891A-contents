@@ -1,0 +1,1199 @@
+### Imports ####
+library(tidyverse)
+library(tidymodels)
+# library(skimr) #used for skim() function, to skim dataframes
+# library(lubridate)
+# library(Amelia) #used for missmap() function, to graph missing values in a df
+library(xgboost)
+library(base)
+library(rlist)
+library(Matrix)
+
+options(dplyr.width = Inf) # show all columns when printing to console
+theme_set(theme_minimal()) 
+set.seed(2021)
+
+########################################### Preprocessing ################################
+
+
+## preprocessing ###
+preprocessing <- function(
+  physicians, payments, companies
+){
+  physicians <- physicians %>%
+    select(
+      -Name_Suffix,
+      -First_Name,
+      -Last_Name,
+      -Middle_Name,
+      -Zipcode,
+      -Province, #It is empty
+      -City,
+      -State, # almost equal to lincensed_state_1
+      -Country
+      # -starts_with("License_State_")
+    ) %>% 
+    separate(
+      Primary_Specialty,
+      c('Specialty1', 'Specialty2', 'Specialty3'), 
+      "\\|"
+    )
+    
+    transactions <- payments %>% 
+    select(-ends_with("Travel"), -starts_with("Product_Name"),
+           -starts_with("Product_C"),
+           -Date)
+
+  
+    companies <- companies %>% select(-Name) %>% 
+        rename(
+          Company_State = State,
+          Company_Country = Country
+        )
+  
+    df <- transactions %>% 
+      left_join(physicians, 
+                by = c("Physician_ID" = "id")) %>%
+      left_join(companies, 
+                by = c("Company_ID" = "Company_ID"))
+  
+  #Tidy the physicians data-set + Change types of columns in the data-sets
+  df <- df %>% 
+    rename(id = Physician_ID) %>%
+    mutate(
+      Ownership_Indicator = case_when(
+        Ownership_Indicator == 'Yes' ~ 1,
+        Ownership_Indicator == 'No' ~ 0
+      ),
+      Company_ID = factor(Company_ID)
+      # Number_of_related_products= rowSums(!is.na(df %>% select(starts_with("Product_Type_"))))
+    ) %>%
+    relocate(Record_ID, id, Company_ID, Ownership_Indicator) 
+  
+  #handling NA values
+  # nullcols <- colnames(df %>%select_if(~any(is.na(.))))  
+  df <- df %>% mutate(across(where(~any(is.na(.))),
+                             ~replace_na(., "DUMMY"))
+  )
+  
+  # cast to factor
+  states <- Reduce(union, list(df$License_State_1, df$License_State_2, 
+                               df$License_State_3, df$License_State_4, 
+                               df$License_State_5))
+  
+  specialties <- Reduce(union, list(df$Specialty1, df$Specialty2, 
+                                    df$Specialty3))
+  types <- Reduce(union, list(df$Product_Type_1, df$Product_Type_2, 
+                              df$Product_Type_3))
+  physicians <- physicians %>% mutate(
+    License_State_1 = factor(License_State_1, levels = states),
+    License_State_2 = factor(License_State_2, levels = states),
+    License_State_3 = factor(License_State_3, levels = states),
+    License_State_4 = factor(License_State_4, levels = states),
+    License_State_5 = factor(License_State_5, levels = states),
+    Specialty1 = factor(Specialty1, levels = specialties),
+    Specialty2 = factor(Specialty2, levels = specialties),
+    Specialty3 = factor(Specialty3, levels = specialties)
+  )
+  
+  df <- df %>% mutate(
+    License_State_1 = factor(License_State_1, levels = states),
+    License_State_2 = factor(License_State_2, levels = states),
+    License_State_3 = factor(License_State_3, levels = states),
+    License_State_4 = factor(License_State_4, levels = states),
+    License_State_5 = factor(License_State_5, levels = states),
+    Specialty1 = factor(Specialty1, levels = specialties),
+    Specialty2 = factor(Specialty2, levels = specialties),
+    Specialty3 = factor(Specialty3, levels = specialties),
+    Product_Type_1 = factor(Product_Type_1, levels = types),
+    Product_Type_2 = factor(Product_Type_2, levels = types),
+    Product_Type_3 = factor(Product_Type_3, levels = types)
+    
+  )%>%   mutate(
+    across(where(is.character),
+           ~factor(., levels = unique(.)))
+  )
+  df <- df %>% 
+    group_by(id) %>%
+    mutate(
+      Payment_Physician = sum(Total_Amount_of_Payment_USDollars)
+      ) %>% ungroup() %>% arrange(id)
+
+     return(df)
+}
+
+preprocess2_df <- function(df){
+  
+  nature <- df %>% select(id, Nature_of_Payment_or_Transfer_of_Value, Ownership_Indicator) %>%
+    mutate(
+      OI = Ownership_Indicator
+    ) %>%
+    group_by(Nature_of_Payment_or_Transfer_of_Value) %>% 
+    arrange(Nature_of_Payment_or_Transfer_of_Value) %>%
+    mutate(
+      Nature = paste0("N", Nature_of_Payment_or_Transfer_of_Value),
+      numOI = sum(OI)
+    ) %>% ungroup() %>% distinct(id, Nature, numOI) %>% 
+    group_by(id, Nature) %>%
+    pivot_wider(
+      names_from = Nature, values_from = numOI
+    ) %>% ungroup() %>% arrange(id)
+  
+  
+  context_info <- df %>% select(Contextual_Information) %>% 
+    group_by(Contextual_Information)  %>% summarise(n = n()) %>% filter(n>7)
+  context <- df %>% filter(Contextual_Information %in% context_info$Contextual_Information) %>%
+    mutate(
+      OI = Ownership_Indicator
+    ) %>% 
+    group_by(Contextual_Information) %>% 
+    mutate(
+      Context = paste0("CT", Contextual_Information),
+      numOI = sum(OI)
+    ) %>% ungroup() %>% distinct(id, Context, numOI) %>% 
+    group_by(id, Context) %>%
+    pivot_wider(
+      names_from = Context, values_from = numOI
+    ) %>% ungroup() %>% arrange(id)
+  colnames(context) <- substr(colnames(context), start = 1, stop = 15)
+  colnames(context) <- make.names(colnames(context), unique=TRUE)
+  
+  
+  
+  
+  
+  charity <- df %>% select(id, Charity, Ownership_Indicator) %>%
+    mutate(
+      OI = Ownership_Indicator
+    ) %>%
+    group_by(Charity) %>% 
+    arrange(Charity) %>%
+    mutate(
+      Charity = paste0("Cha", Charity),
+      numOI = sum(OI)
+    ) %>% ungroup() %>% distinct(id, Charity, numOI) %>% 
+    group_by(id, Charity) %>%
+    pivot_wider(
+      names_from = Charity, values_from = numOI
+    ) %>% ungroup() %>% arrange(id)
+  
+  relpro <- df %>% select(id, Related_Product_Indicator, Ownership_Indicator) %>%
+    mutate(
+      OI = Ownership_Indicator
+    ) %>%
+    group_by(Related_Product_Indicator) %>% 
+    arrange(Related_Product_Indicator) %>%
+    mutate(
+      Related_Product_Indicator = paste0("N", Related_Product_Indicator),
+      numOI = sum(OI)
+    ) %>% ungroup() %>% distinct(id, Related_Product_Indicator, numOI) %>% 
+    group_by(id, Related_Product_Indicator) %>%
+    pivot_wider(
+      names_from = Related_Product_Indicator, values_from = numOI
+    ) %>% ungroup() %>% arrange(id)
+  
+  
+  
+  # compute number of OI physician by form    
+  form<- df %>% select(id, Form_of_Payment_or_Transfer_of_Value, Ownership_Indicator) %>%
+    group_by(id) %>%
+    mutate(
+      OI = as.numeric(any(Ownership_Indicator == 1)),
+    ) %>% ungroup() %>%
+    # mutate(
+    #   OI = Ownership_Indicator,
+    # ) %>%
+    group_by(Form_of_Payment_or_Transfer_of_Value) %>% 
+    arrange(Form_of_Payment_or_Transfer_of_Value) %>%
+    mutate(
+      Form = paste0("F", Form_of_Payment_or_Transfer_of_Value),
+      numOI = sum(OI)
+    ) %>% ungroup() %>% distinct(id, Form, numOI) %>% 
+    group_by(id, Form) %>%
+    pivot_wider(
+      names_from = Form, values_from = numOI
+    ) %>% ungroup() %>% arrange(id)
+  
+  
+  
+  
+  
+  # compute number of OI physician by company    
+  comp <- df %>%  select(id, Company_ID, Ownership_Indicator) %>%
+    group_by(id) %>%
+    mutate(
+      OI = as.numeric(any(Ownership_Indicator == 1)),
+    ) %>% ungroup() %>%
+    # mutate(
+    #     OI = Ownership_Indicator,
+    #   ) %>%
+    distinct(id, Company_ID, OI) %>%
+    group_by(Company_ID) %>% arrange(Company_ID) %>%
+    mutate(
+      Company = paste0("C", Company_ID),
+      numOI = mean(OI)
+    ) %>% ungroup() %>% distinct(id, Company, numOI) %>% 
+    group_by(id, Company) %>%
+    pivot_wider(
+      names_from = Company, values_from = numOI
+    ) %>% ungroup() %>% arrange(id) 
+  
+  
+
+  
+  # compute the owndership indicator count
+  # comp1 <- df %>%
+  #   select(Company_ID, Ownership_Indicator) %>%
+  #   group_by(Company_ID) %>%
+  #   mutate(
+  #     num_PaymentWithOI = sum(Ownership_Indicator)
+  #   ) %>%
+  #   distinct(Company_ID, num_PaymentWithOI) %>% arrange(Company_ID)
+  # 
+  # comp <- data.frame(matrix(rep(comp1$num_PaymentWithOI, length(unique(df$id))),
+  #                           nrow = length(unique(df$id)), byrow = T))
+  # colnames(comp) <- paste("C",comp1$Company_ID)
+  # comp$id <- unique(df$id)
+  
+  
+  
+  prod <- df %>% select(id, Product_Type_1, Ownership_Indicator) %>%
+    mutate(
+      OI = Ownership_Indicator,
+    ) %>% 
+    distinct(id, Product_Type_1, OI) %>%
+    group_by(Product_Type_1) %>% arrange(Product_Type_1) %>%
+    mutate(
+      Product = paste0("P", Product_Type_1),
+      numOI = sum(OI)
+    ) %>% ungroup() %>% distinct(id, Product, numOI) %>% 
+    group_by(id, Product) %>%
+    pivot_wider(
+      names_from = Product, values_from = numOI
+    ) %>% ungroup() %>% arrange(id)
+  
+  
+  
+  
+  
+  # number of OI physician by states
+  states <- df %>% 
+    group_by(id) %>%
+    mutate(
+      OI = as.numeric(any(Ownership_Indicator == 1)),
+    ) %>% ungroup() %>%
+    # mutate(
+    #   OI = Ownership_Indicator,
+    # ) %>%
+    select(id, starts_with("License_State_"), OI) %>%
+    pivot_longer(
+      cols = starts_with("License_State_"),
+      names_to = "LState_Indicator",
+      values_to = "LState",
+      values_drop_na = T) %>%
+    mutate(
+      LState_Indicator = LState,
+      LState_Indicator = case_when(
+        LState_Indicator == 'DUMMY' ~ 0,
+        LState_Indicator != 'DUMMY' ~ 1
+      )
+    ) %>% filter(LState != "DUMMY") %>% 
+    distinct() %>%
+    group_by(LState) %>% arrange(LState) %>%
+    mutate(
+      LState = paste("L", LState),
+      numOI = sum(OI)
+    ) %>% ungroup() %>% distinct(id,LState, numOI) %>%
+    group_by(id, LState) %>%
+    pivot_wider(
+      names_from = LState, values_from = numOI
+    ) %>% ungroup() %>% arrange(id)
+  
+  
+  spec <- df %>%  
+    group_by(id) %>%
+    mutate(
+      OI = as.numeric(any(Ownership_Indicator == 1)),
+    ) %>% ungroup() %>%
+    # mutate(
+    #   OI = Ownership_Indicator,
+    # ) %>%
+    select(id, starts_with("Specialty"), OI) %>%
+    pivot_longer(
+      cols = starts_with("Specialty"),
+      names_to = "Specialty_Indicator",
+      values_to = "Specialty",
+      values_drop_na = T) %>%
+    mutate(
+      Specialty_Indicator = Specialty,
+      Specialty_Indicator = case_when(
+        Specialty_Indicator == 'DUMMY' ~ 0,
+        Specialty_Indicator != 'DUMMY' ~ 1
+      )
+    ) %>% filter(Specialty_Indicator != "DUMMY") %>% distinct() %>%
+    group_by(Specialty) %>% arrange(Specialty) %>%
+    mutate(
+      Specialty = paste("S", Specialty),
+      numOI = sum(OI)
+    ) %>% ungroup() %>% distinct(id,Specialty, numOI) %>%
+    group_by(id, Specialty) %>%
+    pivot_wider(
+      names_from = Specialty, values_from = numOI
+    ) %>% ungroup() %>% arrange(id)
+  
+  
+  nature_p <- df %>% 
+    select(id, Nature_of_Payment_or_Transfer_of_Value, Total_Amount_of_Payment_USDollars, Payment_Physician) %>%
+    group_by(id, Nature_of_Payment_or_Transfer_of_Value) %>%
+    mutate(
+      NatureOfPayment = paste0("NATURE_", Nature_of_Payment_or_Transfer_of_Value),
+      sumPaymentbyNature_Physician = sum(Total_Amount_of_Payment_USDollars),
+      
+    ) %>% ungroup() %>%
+    distinct(id, NatureOfPayment, sumPaymentbyNature_Physician) %>% 
+    pivot_wider(
+      names_from = NatureOfPayment, values_from = sumPaymentbyNature_Physician
+    ) %>% arrange(id)
+  
+  form_p <- df %>% 
+    select(id, Form_of_Payment_or_Transfer_of_Value, Total_Amount_of_Payment_USDollars, Payment_Physician) %>%
+    group_by(id, Form_of_Payment_or_Transfer_of_Value) %>%
+    mutate(
+      FormOfPayment = paste0("FORM_", Form_of_Payment_or_Transfer_of_Value),
+      sumPaymentbyForm_Physician = 
+        sum(Total_Amount_of_Payment_USDollars)
+    ) %>% ungroup() %>%
+    distinct(id, FormOfPayment, sumPaymentbyForm_Physician) %>% 
+    pivot_wider(
+      names_from = FormOfPayment, values_from = sumPaymentbyForm_Physician
+    ) %>% arrange(id)
+  # only use the Product_Type_1
+  prod_p <- df %>% 
+    select(id, Product_Type_1, Total_Amount_of_Payment_USDollars, Payment_Physician) %>%
+    group_by(id, Product_Type_1) %>%
+    mutate(
+      Type = paste0("Type_", Product_Type_1),
+      sumPaymentbyType_Physician = 
+        sum(Total_Amount_of_Payment_USDollars)
+    ) %>% ungroup() %>% distinct(id, Product_Type_1, sumPaymentbyType_Physician) %>%
+    pivot_wider(
+      names_from = Product_Type_1, values_from = sumPaymentbyType_Physician
+    ) %>% arrange(id)
+  comp_p <- df %>%
+    select(id, Company_ID, Total_Amount_of_Payment_USDollars) %>%
+    group_by(id, Company_ID) %>%
+    mutate(
+      Company = paste("COMP_", Company_ID),
+      TransactionBetweenPhysicianCompany = sum(Total_Amount_of_Payment_USDollars)
+    ) %>% ungroup() %>% 
+    distinct(id, Company, TransactionBetweenPhysicianCompany) %>% 
+    pivot_wider(
+      names_from = Company, values_from = TransactionBetweenPhysicianCompany
+    ) %>% arrange(id)
+  
+  
+  OI <- df %>% 
+    group_by(id) %>%
+    mutate(
+      O_I = as.numeric(any(Ownership_Indicator == 1)),
+      sumPayment = sum(Total_Amount_of_Payment_USDollars),
+      meanPayment = mean(Total_Amount_of_Payment_USDollars),
+      medianPayment = median(Total_Amount_of_Payment_USDollars),
+    ) %>% ungroup() %>% 
+    distinct(id, O_I) %>% arrange(id)
+  
+  new_df <- cbind(OI,
+                  nature %>% select(-id),
+                  form %>% select(-id),
+                  context %>% select(-id), 
+                  comp %>% select(-id),
+                  prod %>% select(-id),
+                  states %>% select(-id),
+                  charity%>% select(-id),
+                  relpro%>% select(-id),
+                  # comp_p %>% select(-id),
+                  prod_p %>% select(-id),
+                  # form_p %>% select(-id),
+                  nature_p %>% select(-id)  
+                  )
+  # remove dummy cols
+  
+  
+  new_df <- new_df %>% select(-ends_with("DUMMY")) %>%
+    mutate(across(where(~any(is.na(.))),
+                  ~replace_na(., 0))
+  )
+  
+  # remove all zero cols
+  new_df <- new_df[, colSums(new_df != 0) > 0]
+  colnames(new_df) <- gsub(" ", "", colnames(new_df))  
+  test_id <- physicians %>% filter(set == "test") %>% distinct(id)
+  train_id <- physicians %>% filter(set == "train") %>% distinct(id)
+  
+  test <- new_df %>% filter(new_df$id %in% test_id$id)
+  train <- new_df %>% filter(new_df$id %in% train_id$id)
+  
+  return(list(train, test))
+}
+  
+
+## Predictor return the model
+CHAP_Predictor <- function(
+  matrix = NULL,
+  eta = 0.5,
+  nround = 50,
+  subsample = 0.8,
+  gamma = 0.5,
+  alpha = 1,
+  lambda = 1,
+  booster = "gblinear",
+  feature_selector = "greedy",
+  updater = "coord_descent",
+  eval_metric = "logloss",
+  objective = "binary:logistic",
+  top_k = 20,
+  scale_pos_weight = 20,
+  max.depth = 10,
+  base_score = 0.5
+){# sink("myfilename", append=FALSE, split=TRUE)  # for screen and log
+  ids <- matrix[,1]
+  labels <- matrix[,2]
+  matrix <- matrix[, c(-1, -2)]
+  xgb.DMatrix <- xgb.DMatrix(data = matrix, label= labels)
+  
+  model <- xgboost(data = xgb.DMatrix, # the data
+                   nround = nround, # max number of boosting iterations
+                   eta = eta,
+                   subsample = subsample,
+                   gamma = gamma,
+                   scale_pos_weight = scale_pos_weight,
+                   objective = objective,
+                   max.depth = max.depth,
+                   early_stopping_rounds = 5,
+                   eval_metric = eval_metric,
+                   print_every_n = 10
+  )
+  # model <- xgboost(data = xgb.DMatrix, # the data
+  #                  nround = nround, # max number of boosting iterations
+  #                  eta = eta,
+  #                  subsample = subsample,
+  #                  scale_pos_weight = scale_pos_weight,
+  #                  alpha = 1,
+  #                  lambda = 1,
+  #                  feature_selector = feature_selector,
+  #                  top_k = 20,
+  #                  objective = objective,
+  #                  booster = booster,
+  #                  updater = updater,
+  #                  max.depth = max.depth,
+  #                  early_stopping_rounds = 10,
+  #                  eval_metric = eval_metric,
+  #                  print_every_n = 5,
+  #                  base_score = base_score
+  #                  )
+  return(model)
+}
+
+
+##predict
+Predict_CHAP <- function(model = NULL, matrix = NULL){
+  ids <- matrix[,1]
+  labels <- matrix[,2]
+  matrix <- matrix[, c(-1, -2)]
+  xgb.DMatrix <- xgb.DMatrix(data = matrix, label= labels)
+  O_I_predicted <- predict(model, xgb.DMatrix)
+  return(O_I_predicted)
+}
+
+
+
+aggregate_df <- function(df){
+  
+  
+  
+  
+  
+  comp <- df %>%
+    select(id, Company_ID, Total_Amount_of_Payment_USDollars) %>%
+    group_by(id, Company_ID) %>%
+    mutate(
+      Company = paste("COMP_", Company_ID),
+      TransactionBetweenPhysicianCompany = sum(Total_Amount_of_Payment_USDollars)
+    ) %>% ungroup() %>% 
+    distinct(id, Company, TransactionBetweenPhysicianCompany) %>% 
+    pivot_wider(
+      names_from = Company, values_from = TransactionBetweenPhysicianCompany
+    ) %>% arrange(id)
+  
+  
+  nature <- df %>% 
+    select(id, Nature_of_Payment_or_Transfer_of_Value, Total_Amount_of_Payment_USDollars, Payment_Physician) %>%
+    group_by(id, Nature_of_Payment_or_Transfer_of_Value) %>%
+    mutate(
+      NatureOfPayment = paste("NATURE_", Nature_of_Payment_or_Transfer_of_Value),
+      Sum_PaymentbyNature_Physician = sum(Total_Amount_of_Payment_USDollars),
+      PercentPaymentbyNature_Physician = 
+        Sum_PaymentbyNature_Physician/Payment_Physician * 100
+    ) %>% ungroup() %>%
+    distinct(id, NatureOfPayment, PercentPaymentbyNature_Physician) %>% 
+    pivot_wider(
+      names_from = NatureOfPayment, values_from = PercentPaymentbyNature_Physician
+    ) %>% arrange(id)
+  
+  form <- df %>% 
+    select(id, Form_of_Payment_or_Transfer_of_Value, Total_Amount_of_Payment_USDollars, Payment_Physician) %>%
+    group_by(id, Form_of_Payment_or_Transfer_of_Value) %>%
+    mutate(
+      FormOfPayment = paste("FORM_", Form_of_Payment_or_Transfer_of_Value),
+      PercentPaymentbyForm_Physician = 
+        sum(Total_Amount_of_Payment_USDollars)/Payment_Physician * 100
+    ) %>% ungroup() %>%
+    distinct(id, FormOfPayment, PercentPaymentbyForm_Physician) %>% 
+    pivot_wider(
+      names_from = FormOfPayment, values_from = PercentPaymentbyForm_Physician
+    ) %>% arrange(id)
+  # only use the Product_Type_1
+  prod <- df %>% 
+    select(id, Product_Type_1, Total_Amount_of_Payment_USDollars, Payment_Physician) %>%
+    group_by(id, Product_Type_1) %>%
+    mutate(
+      Type = paste("Type_", Product_Type_1),
+      PercentPaymentbyType_Physician = 
+        sum(Total_Amount_of_Payment_USDollars)/Payment_Physician * 100
+    ) %>% ungroup() %>% distinct(id, Product_Type_1, PercentPaymentbyType_Physician) %>%
+    pivot_wider(
+      names_from = Product_Type_1, values_from = PercentPaymentbyType_Physician
+    ) %>% arrange(id)
+  
+  states <- df %>% 
+    select(id, starts_with("License_State_")) %>%
+    pivot_longer(
+      cols = starts_with("License_State_"),
+      names_to = "LState_Indicator",
+      values_to = "LState",
+      values_drop_na = T) %>%
+    mutate(
+      LState_Indicator = LState,
+      LState_Indicator = case_when(
+        LState_Indicator == 'DUMMY' ~ 0,
+        LState_Indicator != 'DUMMY' ~ 1
+      )
+    ) %>% filter(LState != "DUMMY") %>% distinct() %>%
+    pivot_wider(
+      names_from = LState, values_from = LState_Indicator
+    ) %>% arrange(id)
+  
+  spec <- df %>% 
+    select(id, starts_with("Specialty")) %>%
+    pivot_longer(
+      cols = starts_with("Specialty"),
+      names_to = "Specialty_Indicator",
+      values_to = "Specialty",
+      values_drop_na = T) %>%
+    mutate(
+      Specialty_Indicator = Specialty,
+      Specialty_Indicator = case_when(
+        Specialty_Indicator == 'DUMMY' ~ 0,
+        Specialty_Indicator != 'DUMMY' ~ 1
+      )
+    ) %>% filter(Specialty_Indicator != "DUMMY") %>% distinct() %>%
+    pivot_wider(
+      names_from = Specialty, values_from = Specialty_Indicator
+    ) %>% arrange(id)
+  
+  
+  OI <- df %>% group_by(id) %>%
+    mutate(
+      O_I = as.numeric(any(Ownership_Indicator == 1)),
+      Payment_Physician = sum(Total_Amount_of_Payment_USDollars),
+      NumberOfPayments_Physician = sum(Number_of_Payments),
+      mean_Payment_Physician = Payment_Physician/NumberOfPayments_Physician,
+      median_Payment_Physician = median(Total_Amount_of_Payment_USDollars) 
+      # model_prediction = any(model_prediction== "1")
+    ) %>% ungroup() %>% distinct(id, O_I) %>% arrange(id)
+  
+  new_df <- cbind(OI,
+                  nature %>% select(-id),
+                  form %>% select(-id), 
+                  comp %>% select(-id),
+                  prod %>% select(-id),
+                  states %>% select(-id),
+                  spec %>% select(-id)
+  )
+  # remove dummy cols
+  
+  
+  new_df <- new_df %>% select(-ends_with("DUMMY")) %>%
+    mutate(across(where(~any(is.na(.))),
+                  ~replace_na(., 0))
+    )
+  
+  return(new_df)   
+}
+
+
+prepare_DMatrices <- function(
+  df = NULL
+){
+  ## creating design matrices for attributes of  factor type 
+  # df <- generate_extra_attributes(df)
+  df1 
+  df <- df %>% group_by(id)
+  
+  
+  M_specialty_1 <- sparse.model.matrix(
+    id~Specialty_-1, 
+    df %>% distinct(id, Specialty1) %>% mutate(Specialty_ = Specialty1))
+  M_specialty_2 <- sparse.model.matrix(
+    id~Specialty_-1,
+    df %>% distinct(id, Specialty2) %>% mutate(Specialty_ = Specialty2))
+  M_specialty_3 <- sparse.model.matrix(
+    ~Specialty_-1, 
+    df %>% distinct(id, Specialty3) %>% mutate(Specialty_ = Specialty3))
+  M_specialty <- M_specialty_1 + M_specialty_2 + M_specialty_3
+  rm(list=ls(pattern="^M_specialty_"))
+  
+  # M_Product <- model.matrix(~Product_Type_1-1,df)
+  # M_Product_1 <- sparse.model.matrix(
+  #   id~Product_-1, 
+  #   df %>% distinct(id, Product_Type_1) %>% mutate(Product_ = Product_Type_1))
+  # M_Product_2 <- sparse.model.matrix(
+  #   id~Product_-1, 
+  #   df %>%distinct(id, Product_Type_2) %>% mutate(Product_ = Product_Type_2))
+  # M_Product_3 <- sparse.model.matrix(
+  #   id~Product_-1, 
+  #   df %>% distinct(id, Product_Type_3) %>% mutate(Product_ = Product_Type_3))
+  # M_Product <- M_Product_1 + M_Product_2 + M_Product_3
+  # rm(list=ls(pattern="^M_Product_"))
+  
+  M_LStates_1 <- sparse.model.matrix(
+    id~LStates_-1, 
+    df %>% distinct(id, License_State_1) %>% mutate(LStates_ = License_State_1))
+  M_LStates_2 <- sparse.model.matrix(
+    id~LStates_-1, 
+    df %>% distinct(id, License_State_2) %>% mutate(LStates_ = License_State_2))
+  M_LStates_3 <- sparse.model.matrix(
+    id~LStates_-1, 
+    df %>% distinct(id, License_State_3) %>% mutate(LStates_ = License_State_3))
+  M_LStates_4 <- sparse.model.matrix(
+    id~LStates_-1, 
+    df %>% distinct(id, License_State_4) %>% mutate(LStates_ = License_State_4))
+  M_LStates_5 <- sparse.model.matrix(
+    id~LStates_-1, 
+    df %>% distinct(id, License_State_5) %>% mutate(LStates_ = License_State_5))
+  
+  M_LStates <- M_LStates_1 + M_LStates_2 + M_LStates_3 + M_LStates_4 + M_LStates_5
+  rm(list=ls(pattern="^M_LStates_"))
+  
+  
+  # M_Form <- sparse.model.matrix(
+  #   id~Form_of_Payment_or_Transfer_of_Value-1,
+  #   df %>% distinct(id, Form_of_Payment_or_Transfer_of_Value))
+  # M_Nature <- sparse.model.matrix(
+  #   id~Nature_of_Payment_or_Transfer_of_Value-1,
+  #   df %>% distinct(id, Nature_of_Payment_or_Transfer_of_Value))
+  M_Charity <- sparse.model.matrix(~Charity-1,df)
+  M_ThirdParty_C <- sparse.model.matrix(~Third_Party_Covered-1,df)
+  M_ThirdParty_R <- sparse.model.matrix(~Third_Party_Recipient-1,df)
+  M_RelProInd <- sparse.model.matrix(~Related_Product_Indicator-1,df)
+  M_ComState <- sparse.model.matrix(~Company_State-1,df)
+  M_ComCountry <- sparse.model.matrix(~Company_Country-1,df)
+  
+  
+  # a <- paste(ls(pattern = "^M"), sep =" ", collapse = ", ")  
+  
+  
+  
+  dMatrix <- cbind(
+    df$id, 
+    df$Ownership_Indicator,
+    df$Total_Amount_of_Payment_USDollars,
+    df$Number_of_licenses,
+    df$Number_of_related_products,
+    # M_Charity, 
+    M_ComCountry, 
+    # M_ComState, 
+    M_Form, 
+    M_Nature, 
+    M_RelProInd, 
+    # M_ThirdParty_C, 
+    # M_ThirdParty_R,  
+    M_Product, 
+    M_specialty, 
+    M_LStates 
+  )
+  rm(list=ls(pattern="^M_"))
+  
+  
+  #cbind can not properly handle data.frame and dgCMatrix. 
+  #After binding, the colnames of data.frame are missing 
+  
+  dMatrix@Dimnames[[2]][1:5] = c(
+    "id", "Ownership_Indicator", "Total_Amount_of_Payment_USDollars", 
+    "Number_of_licenses", "Number_of_related_products")
+  
+  # now remove Dummy
+  colnames <- dMatrix@Dimnames[[2]]
+  DUMMYpos <- grep("DUMMY$", colnames, perl=TRUE, value=FALSE)
+  dMatrix <- dMatrix[, !colnames %in% colnames[DUMMYpos]]
+  
+  # final preparation
+  ids <- dMatrix[,1]
+  labels <- dMatrix[,2]
+  dMatrix <- dMatrix[, c(-1, -2)]
+  
+  # xgb.DMatrix <- xgb.DMatrix(data = dMatrix, label= labels)
+  
+  
+  return(list(xgb.DMatrix, ids, labels))
+  
+}
+
+
+
+
+
+
+
+
+
+#########################################Submission#######################################
+
+
+
+companies <- read.csv('companies.csv', stringsAsFactors = F)
+payments <- read.csv('payments.csv', stringsAsFactors = F)
+physicians <- read.csv('physicians.csv', stringsAsFactors = F)
+
+df <- preprocessing(
+  companies = companies, payments = payments, physicians = physicians)
+
+df_mat <- preprocess2_df(df)
+
+train <- data.matrix(df_mat[[1]], rownames.force = NA)
+test <- data.matrix(df_mat[[2]], rownames.force = NA)
+
+# O <- Reduce(cbind, list_test)
+
+
+## create stratified folds using train
+ids <- train[,1]
+labels <- train[,2]
+train <- train[, c(-1, -2)]
+xgb.DMatrix <- xgb.DMatrix(data = train, label= labels)
+
+set.seed(2021)
+
+xgboostModelCV <- xgb.cv(
+  data =  xgb.DMatrix, 
+  nrounds = 1, nfold = 6,
+  showsd = TRUE, stratified = T)
+
+train_id <- physicians %>% filter(set == "train") %>% distinct(id)
+physicians_t <- physicians %>% filter(id %in% train_id$id)
+payments_t <- payments %>% filter(Physician_ID %in% train_id$id)
+
+
+physicians_val_id <- physicians_t[xgboostModelCV$folds[[1]] ,]$id
+physicians_test_id <- physicians_t[c(xgboostModelCV$folds[[2]]),]$id
+physicians_train_id<- physicians_t[-c(xgboostModelCV$folds[[1]],
+                                    xgboostModelCV$folds[[2]]),]$id
+
+payments_v <- payments_t[is.element(payments_t$Physician_ID, physicians_val_id),]
+length(unique(payments_v$Physician_ID))
+label <- payments_v %>% group_by(Physician_ID) %>%
+  mutate(
+    O_I = as.numeric(any(Ownership_Indicator == "Yes"))
+  ) %>% ungroup() %>% distinct(Physician_ID, O_I)
+payments_v <- payments_t[is.element(payments_t$Physician_ID, physicians_val_id),]
+
+payments_v<- payments_v %>% filter(Ownership_Indicator == "Yes")
+payments_t <- payments_t %>% filter(! Record_ID %in% payments_v$Record_ID)
+
+experiment_df <- preprocessing(companies = companies, payments = payments_t, physicians = physicians_t)
+
+experiment <- preprocess2_df(experiment_df)
+data <- experiment[[1]]  
+
+
+
+##devide it into train test and val set
+ex_test <- data.matrix(data %>% filter(data$id %in% physicians_test_id), rownames.force = NA)
+ex_train <-data.frame(data %>% filter(data$id %in% physicians_train_id))
+ex_val <-  data.matrix(data %>% filter(data$id %in% physicians_val_id), rownames.force = NA)
+
+
+library("randomForest")
+library("party")
+colnames(ex_train) <- substr(colnames(ex_train), 1, 10)
+colnames(ex_train) <- gsub("\\.", "", colnames(ex_train))
+colnames(ex_train) <- gsub("\\,", "", colnames(ex_train))
+colnames(ex_train) <- make.unique(colnames(ex_train))
+id <- ex_train[, 1]
+output <- randomForest(O_I ~., data = ex_train[, c(-1)])
+  
+
+################################ cv #######################################
+  bestBAC <- 0
+  bestParams <- NULL
+  bestConfMat <- NULL
+  bestmodel <- NULL
+
+  # cv_params <- expand.grid(
+  #   eta =
+  #     c(2e-2, 5e-2, 8e-2),
+  #   subsample =
+  #     c(0.8, 0.9, 1),
+  #   max.depth =
+  #     c(4, 6, 8, 10),
+  #   gamma =
+  #     c(0, 1, 0.5, 0.25, 1e-1),
+  #   base_score =
+  #     c(0.4, 0.5, 0.6),
+  #   threshold =
+  #     c(0.4, 0.5, 0.6)
+  # )
+  cv_params <- expand.grid(
+    eta =
+      c(2e-1, 4e-1, 6e-1),
+    subsample =
+      c(0.9),
+    max.depth =
+      c(3, 5, 7),
+    gamma =
+      c(0.5, 1,5),
+    base_score =
+      c(0.3, 0.5, 0.7),
+    threshold =
+      c(0.1, 0.5)
+  )
+
+  log <- data.frame()#read.csv("log.csv")
+  for(i in 1:dim(cv_params)[1]){
+    
+    test_model <- CHAP_Predictor( 
+      matrix = ex_train,
+      eta = cv_params$eta[i],
+      nround = 300,
+      gamma = cv_params$gamma[i],
+      
+      subsample = cv_params$subsample[i],
+      scale_pos_weight = 30,
+      max.depth = cv_params$max.depth[i],
+      base_score = cv_params$base_score[i],
+      objective = "binary:logistic",
+      eval_metric = "logloss",
+      booster = "gbtree"
+    )
+    
+    O_I_predicted_t <- Predict_CHAP(model = test_model, matrix = ex_test)
+    O_I_predicted_t <- as.numeric(O_I_predicted_t > cv_params$threshold[i])
+    result_t <- data.frame(id = ex_test[, 1], truth =  ex_test[, 2], 
+                            prediction = O_I_predicted_t)
+    
+
+    result_t <- result_t %>% group_by(id) %>%
+      mutate(
+        prediction = as.numeric(any(prediction == 1)),
+        truth = as.numeric(any(truth == 1))
+      ) %>% ungroup() %>% distinct(id, prediction, truth)
+    
+    ConfMat <- table(truth = result_t$truth, prediction = result_t$prediction)
+    BAC <- (ConfMat[2,2]/(ConfMat[2,2]+ConfMat[2,1]) + ConfMat[1,1]/(ConfMat[1,1]+ConfMat[1,2]))/2
+    
+
+    O_I_predicted_v <- Predict_CHAP(model = test_model, matrix = ex_val)
+    O_I_predicted_v <- as.numeric(O_I_predicted_v > cv_params$threshold[i])
+    
+    result_v <- data.frame(id = ex_val[, 1], prediction = O_I_predicted_v)
+
+    result_v <- result_v %>% left_join(label, by = c("id" = "Physician_ID")) %>%
+      rename(truth = O_I)
+    
+    result_v <- result_v %>% group_by(id) %>%
+      mutate(
+        prediction = as.numeric(any(prediction == 1)),
+        truth = as.numeric(any(truth == 1))
+        ) %>% 
+      ungroup() %>% distinct(id, prediction, truth)
+
+    ConfMat_v <- table(truth = result_v$truth, prediction = result_v$prediction)
+    BAC_v <- (ConfMat_v[2,2]/(ConfMat_v[2,2]+ConfMat_v[2,1]) + ConfMat_v[1,1]/(ConfMat_v[1,1]+ConfMat_v[1,2]))/2
+    
+    print(paste("test BAC: ", BAC))
+    print(paste("val BAC: ", BAC_v))
+    BAC_s <- 0.2*BAC + 0.8*BAC_v
+    
+    ConfMat_v
+    if(BAC_s > bestBAC){
+      
+      bestmodel <- test_model
+      bestBAC <- BAC_s
+      bestConfMat <- ConfMat_v
+      bestParams <- cv_params[i,]
+      log <- rbind(log,data.frame("best" = bestParams, "BAC_s" = BAC_s, "BAC" = BAC, "BAC_v" = BAC_v))
+
+      
+      #   list("eta" = cv_params$eta[i],
+      #                    "subsample" = cv_params$subsample[i],
+      #                    "scale_pos_weight" = cv_params$scale_pos_weight[i],
+      #                    "max.depth" = cv_params$max.depth[i],
+      #                    "gamma" = cv_params$gamma[i],
+      #                    
+      #                    # "alpha" = cv_params$alpha[i],
+      #                    # "lambda" = cv_params$lambda[i],
+      #                    # "top_k" = cv_params$top_k[i],
+      #                    "base_score" = cv_params$base_score[i]
+      # )
+    }
+    
+  }
+  print(bestConfMat)
+  print(bestParams)
+  print(bestBAC)
+  mat <- xgb.importance (feature_names = colnames(ex_train[,c(-1,-2)]),model = bestmodel)
+  xgb.plot.importance (importance_matrix = mat[1:20])
+  
+  write.csv(log, "log.csv")
+  ######################
+  # library("MASS")
+  # library("factoextra")
+  # gc()
+  # summary(data)
+  # 
+  # res.mca <- mca(factor(df %>% dplyr::select(-id, Record_ID, -Company_ID) %>% dplyr::filter(set == "train") ) , nf = 200)
+  # 
+  
+  # data <- data[, colSums(data != 0) > 0]
+  # # data %>% select(-id, O_I)
+  # res.pca <- prcomp(payments, scale = T)
+  # fviz_eig(res.pca)
+  # 
+  # fviz_pca_var(res.pca,
+  #              col.var = "contrib", # Color by contributions to the PC
+  #              gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+  #              repel = TRUE     # Avoid text overlapping
+  # )
+########################
+  # ## Factorization Machines
+  # library(rsparse)
+  # 
+  # # data <- data[, colSums(data != 0) > 0]
+  # 
+  # x = as(ex_train[, -c(1, 2)], "RsparseMatrix")
+  # y = ex_train[, 2]
+  # x_val = as(ex_val[, -c(1, 2)], "RsparseMatrix")
+  # y_val = ex_val[, 2]
+  # 
+  # 
+  # 
+  # 
+  # 
+  # 
+  # bestBAC <- 0
+  # bestParams <- NULL
+  # bestConfMat <- NULL
+  # bestmodel <- NULL
+  # 
+  # cv_params <- expand.grid(
+  #   learning_rate_w =
+  #     c(1e-2, 1e-1, 1),
+  #   learning_rate_v =
+  #     c(1e-2, 1e-1, 1),
+  #   lambda_w =
+  #     c(1e-2, 1e-1, 1),
+  #   lambda_v =
+  #     c(1e-2, 1e-1, 1),
+  #   n_iter = 
+  #     c(100, 200, 300)
+  # )
+  # 
+  # log2 <- data.frame()
+  # for(i in 1:dim(cv_params)[1]){
+  # fm = FactorizationMachine$new(learning_rate_w = cv_params$learning_rate_w[i], 
+  #                               learning_rate_v = cv_params$learning_rate_v[i],
+  #                               rank = 2, 
+  #                               lambda_w = cv_params$lambda_w[i],
+  #                               lambda_v = cv_params$lambda_v[i], 
+  #                               intercept = TRUE)
+  # res = fm$fit(x, y, n_iter = cv_params$n_iter[i])
+  # 
+  # 
+  # 
+  #   preds = fm$predict(x_val)
+  # 
+  # 
+  #   ConfMat <- table(truth = label$O_I, prediction = preds)
+  #   BAC <- (ConfMat[2,2]/(ConfMat[2,2]+ConfMat[2,1]) + ConfMat[1,1]/(ConfMat[1,1]+ConfMat[1,2]))/2
+  #   
+  # 
+  #   if(BAC > bestBAC){
+  #     print(BAC)
+  #     bestmodel <- fm
+  #     bestBAC <- BAC
+  #     bestConfMat <- ConfMat
+  #     bestParams <- cv_params[i,]
+  #     log2 <- rbind(log2,data.frame("best" = bestParams, "BAC" = BAC))
+  #     
+  #     
+  #     #   list("eta" = cv_params$eta[i],
+  #     #                    "subsample" = cv_params$subsample[i],
+  #     #                    "scale_pos_weight" = cv_params$scale_pos_weight[i],
+  #     #                    "max.depth" = cv_params$max.depth[i],
+  #     #                    "gamma" = cv_params$gamma[i],
+  #     #                    
+  #     #                    # "alpha" = cv_params$alpha[i],
+  #     #                    # "lambda" = cv_params$lambda[i],
+  #     #                    # "top_k" = cv_params$top_k[i],
+  #     #                    "base_score" = cv_params$base_score[i]
+  #     # )
+  #   }
+  #   
+  # }
+  # 
+  # 
+  # 
+  # 
+  # 
+  # 
+  
+  
+  # ############################################
+  # ex_train
+  ids <- ex_train[,1]
+  ex_train_labels <- ex_train[,2]
+  ex_matrix <- ex_train[, c(-1, -2)]
+  xgb.DMatrix <- xgb.DMatrix(data = ex_matrix, label= ex_train_labels)
+  
+  test_model <- CHAP_Predictor( 
+    matrix = ex_train,
+    eta = cv_params$eta[i],
+    nround = 300,
+    gamma = cv_params$gamma[i],
+    
+    subsample = cv_params$subsample[i],
+    scale_pos_weight = 30,
+    max.depth = cv_params$max.depth[i],
+    base_score = cv_params$base_score[i],
+    objective = "binary:logistic",
+    eval_metric = "logloss",
+    booster = "gbtree"
+  )
+  
+  O_I_predicted_t <- Predict_CHAP(model = test_model, matrix = ex_test)
+  O_I_predicted_t <- as.numeric(O_I_predicted_t > cv_params$threshold[i])
+  result_t <- data.frame(id = ex_test[, 1], truth =  ex_test[, 2], 
+                         prediction = O_I_predicted_t)
+  
+  
+  # xgboostModelCV <- xgb.cv(
+  #   data =  xgb.DMatrix,
+  #   nrounds = 500, nfold = 5,
+  #   showsd = TRUE, stratified = T,
+  #   
+  #   metrics = "rmse", verbose = TRUE, "eval_metric" = "logloss",
+  #   scale_pos_weight = 25, print_every_n = 5, early_stop_round = 5,
+  #   base_score = 0.5, 
+  #   objective = "binary:logistic", max_depth = 5,
+  #   gamma = 1, eta = 0.6,
+  #   subsample = 1)
+
+  # ids <- train_mat[,1]
+  # labels <- train_mat[,2]
+  # train_mat <- train_mat[, c(-1, -2)]
+  # 
+  # xgb.DMatrix <- xgb.DMatrix(data = train_mat, label= labels)
+  # 
+  # searchGridSubCol <- expand.grid(subsample = c(0.5, 1),
+  #                                 max_depth = c(5, 10, 15),
+  #                                 # scale_pos_weight = c(400, 500, 600),
+  #                                 eta= list(0.4, 0.55, 0.7),
+  #                                 gamma= list(0, 0.5, 1.5)
+  # 
+  # )
+  # ntrees <- 70
+  # 
+  # #Build a xgb.DMatrix object
+  # 
+  # rmseErrorsHyperparameters <- apply(searchGridSubCol, 1, function(parameterList){
+  # 
+  #   #Extract Parameters to test
+  #   currentSubsampleRate <- parameterList[["subsample"]]
+  #   currentDepth <- parameterList[["max_depth"]]
+  #   # currentPositiveWeight <- parameterList[["scale_pos_weight"]]
+  #   currentEta <- parameterList[["eta"]]
+  #   currentGamma <- parameterList[["gamma"]]
+  # 
+  #   xgboostModelCV <- xgb.cv(
+  #     data =  xgb.DMatrix,
+  #     nrounds = ntrees, nfold = 5,
+  #     showsd = TRUE, stratified = T,
+  # 
+  #     metrics = "rmse", verbose = TRUE, "eval_metric" = "logloss",
+  #     scale_pos_weight = 20, print_every_n = 5, early_stop_round = 5,
+  #     "objective" = "binary:logistic", "max_depth" = currentDepth,
+  #     "gamma" = currentGamma, "eta" = currentEta,
+  #     "subsample" = currentSubsampleRate)
+  # 
+  #   xvalidationScores <- xgboostModelCV$evaluation_log
+  #   #Save rmse of the last iteration
+  #   loss <- min(xgboostModelCV$evaluation_log$test_logloss_mean)
+  #   rmse_loss <- min(xgboostModelCV$evaluation_log$test_rmse_mean)
+  # 
+  # 
+  #   return(c(loss, rmse_loss, currentSubsampleRate, currentDepth, currentEta, currentGamma))
+  # 
+  # })
+  # 
+  
+  
+  
+# 
+# model <- CHAP_Predictor(
+#   matrix = train_mat,
+#   eta = bestParams[['eta']],
+#   gamma = bestParams[['gamma']],
+#   nround = 150,
+#   subsample = bestParams[['subsample']],
+#   scale_pos_weight = bestParams[['scale_pos_weight']],
+#   max.depth = bestParams[['max.depth']]
+# )
+# # 
+# # mat <- xgb.importance (feature_names = colnames(train_mat[,c(-1,-2)]),model = model)
+# # xgb.plot.importance (importance_matrix = mat[1:50])
+# # 
+# # 
+# # 
+# O_I_predicted <- Predict_CHAP(model = model, matrix = test_mat)
+# # 
+# O_I_predicted <- as.numeric(O_I_predicted > 0.5)
+# # 
+# # 
+# 
+# submission <- data.frame(id = test_mat[, 1], prediction = O_I_predicted)
+# 
+# 
+# version = "V4"
+# write_csv(submission, paste("CHAP_", version, ".csv"))
+# 
+
+
+  # 
+  # new_df$OI <- 0
+  # new_df <- new_df %>% 
+  #   select(
+  #     -starts_with("Specialty"),
+  #     -starts_with("License")
+  #   ) 
+  # 
+  # new_df <- new_df %>% relocate(OI)
+  # train <- new_df %>% filter(set=="train") %>% select(-set)
+  # 
+  # 
+  
+  # library(bnclassify)
+  # naive <- bnc(
+  #   'nb',
+  #   'OI',
+  #   new_df[,c(-1,-2)],
+  #   1)  

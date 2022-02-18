@@ -1,0 +1,32 @@
+{
+    "id": "E2470C04",
+    "path": null,
+    "project_path": null,
+    "type": "r_dataframe",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1640786431366.0,
+    "source_on_save": false,
+    "relative_order": 10,
+    "properties": {
+        "expression": "importance_matrix",
+        "caption": "importance_matrix",
+        "totalObservations": "180",
+        "displayedObservations": "180",
+        "variables": "4",
+        "cacheKey": "12522105",
+        "object": "importance_matrix",
+        "environment": "",
+        "contentUrl": "grid_resource/gridviewer.html?env=&obj=importance_matrix&cache_key=12522105&max_cols=50",
+        "preview": "0"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 2459000718892870704,
+    "encoding": "",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1640786431366,
+    "read_only": false,
+    "read_only_alternatives": []
+}

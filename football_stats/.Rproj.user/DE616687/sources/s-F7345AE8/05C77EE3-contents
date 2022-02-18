@@ -1,0 +1,151 @@
+library(tidyverse)
+library(tidymodels)
+
+data = read.csv('df.csv', encoding = 'utf8')
+# 
+# data <- data %>% 
+#   mutate(
+#     elite_team = case_when(
+#       squad %in% c("Real Madrid CF", "FC Barcelona") ~ 1,
+#       !squad %in% c("Real Madrid CF", "FC Barcelona") ~ 0
+#     ))
+
+
+
+###################################################################################################################
+library(xgboost)
+library(caret)
+library(DiagrammeR)
+
+
+# data = data[data$FW == 1, ]
+
+
+shuffled_data= data[sample(1:nrow(data)), ]
+df <- shuffled_data[, -which(names(shuffled_data) %in% c("X", "season", "player", "squad"))]
+df <- df %>%
+  relocate(value_eur)
+
+###################################################################################################################
+
+for (col in colnames(data)) {
+  if (col %in% c("id", "season", "squad", "league", "player", "squad", "contract_signing", "elite_team")){
+    print("skip")
+  }else if(col %in% c("xg_net", "npxg_net", "xa_net")){
+    print("skip because log 0")
+  }
+  else{
+    print(col)
+    simple.fit = glm(formula = as.formula(paste0("value_eur~",col, "")), 
+                     data = data, family = Gamma("log"))
+    print(summary(simple.fit))
+  }
+  # plot(data[col],
+  #      log(data$value_eur)
+  # )
+  # abline(model)
+  # 
+}
+  
+###################################################################################################################
+# sample <- sample.split(df$X, SplitRatio = 0.8)
+# train_data <- subset(df, sample == TRUE)
+# test_data <- subset(df, sample == FALSE)
+df$value_eur = log(df$value_eur)
+
+d <- data.frame(df)
+m <- as.matrix(d)
+
+set.seed(1233)
+indices <- sample(1:nrow(df), size = 0.8 * nrow(df))
+train <- m[indices,]
+test <- m[-indices,]
+
+####################################################################################
+hyper_grid <- expand.grid(max_depth = seq(1, 10, 3),
+                          eta = seq(.1, .7, .2),
+                          gamma = seq(0.9, 0.9, 0.2),
+                          subsample = seq(0.5, 0.9, 0.2),
+                          colsample_bytree = seq(0.8, 0.95, 0.05)
+                          )
+
+xgb_train_rmse <- NULL
+xgb_test_rmse <- NULL
+
+for (j in 1:nrow(hyper_grid)) {
+  set.seed(13)
+  m_xgb_untuned <- xgb.cv(
+    data = train[, 2:length(df)],
+    label = train[, 1],
+    nrounds = 1000,
+    objective = "reg:squarederror",
+    early_stopping_rounds = 20,
+    nfold = 5,
+    max_depth = hyper_grid$max_depth[j],
+    eta = hyper_grid$eta[j],
+    gamma = hyper_grid$gamma[j],
+    subsample = hyper_grid$subsample[j],
+    colsample_bytree = hyper_grid$colsample_bytree[j],
+    print_every_n = 50,
+    nthread = 8
+    
+  )
+  
+  # xgb_train_rmse[j] <- m_xgb_untuned$evaluation_log$train_gamma_nloglik_mean[m_xgb_untuned$best_iteration]
+  # xgb_test_rmse[j] <- m_xgb_untuned$evaluation_log$test_gamma_nloglik_mean[m_xgb_untuned$best_iteration]
+  xgb_train_rmse[j] <- m_xgb_untuned$evaluation_log$train_rmse_mean[m_xgb_untuned$best_iteration]
+  xgb_test_rmse[j] <- m_xgb_untuned$evaluation_log$test_rmse_mean[m_xgb_untuned$best_iteration]
+
+  cat(j, "\n")
+}
+
+#ideal hyperparamters
+hyper_grid[which.min(xgb_test_rmse), ]
+
+
+#######################################################################################
+
+
+
+m1_xgb <-
+  xgboost(
+    data = train[, 2:length(df)],
+    label = train[, 1],
+    nrounds = 1000,
+    objective = "reg:squarederror",
+    early_stopping_rounds = 20,
+    max_depth =  hyper_grid[which.min(xgb_test_rmse), ]$max_depth,
+    eta = hyper_grid[which.min(xgb_test_rmse), ]$eta,
+    gamma = hyper_grid[which.min(xgb_test_rmse), ]$gamma,
+    subsample = hyper_grid[which.min(xgb_test_rmse), ]$subsample,
+    colsample_bytree = hyper_grid[which.min(xgb_test_rmse), ]$colsample_bytree,
+    print_every_n = 10
+  )
+
+
+pred_xgb <- predict(m1_xgb, test[, 2:length(df)])
+
+yhat <- pred_xgb
+y <- test[, 1]
+postResample(yhat, y)
+
+
+r <- y - yhat
+plot(r, ylab = "residuals", main = title)
+
+plot(y,
+     yhat,
+     xlab = "actual",
+     ylab = "predicted",
+     main = title)
+abline(lm(yhat ~ y))
+
+#plot first 3 trees of model
+# xgb.plot.tree(model = m1_xgb, trees = 0:2)
+
+importance_matrix <- xgb.importance(model = m1_xgb)
+xgb.plot.importance(importance_matrix[1:30,], xlab = "Feature Importance")
+
+
+
+

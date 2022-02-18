@@ -1,0 +1,25 @@
+{
+    "id": "892A1DEF",
+    "path": "D:/WiSe21_22/football-agent-services/football_stats/create_result_grid.R",
+    "project_path": "create_result_grid.R",
+    "type": "r_source",
+    "hash": "0",
+    "contents": "",
+    "dirty": true,
+    "created": 1644833713417.0,
+    "source_on_save": false,
+    "relative_order": 10,
+    "properties": {
+        "tempName": "Untitled1",
+        "cursorPosition": "221,0",
+        "scrollLine": "199"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1645089470,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1645096650319,
+    "read_only": false,
+    "read_only_alternatives": []
+}

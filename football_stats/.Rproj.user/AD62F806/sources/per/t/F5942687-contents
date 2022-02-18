@@ -1,0 +1,170 @@
+library(tidyverse)
+library(tidymodels)
+
+data = read.csv('df.csv', encoding = 'utf8')
+df_fw = data[data$FW == 1,]
+# data <- data %>% 
+#   mutate(
+#     elite_team = case_when(
+#       squad %in% c("Real Madrid CF", "FC Barcelona") ~ 1,
+#       !squad %in% c("Real Madrid CF", "FC Barcelona") ~ 0
+#     ))
+
+
+
+
+
+
+shuffled_data= df_fw[sample(1:nrow(df_fw)), ]
+df <- shuffled_data[, -which(names(shuffled_data) %in% c("X", "season", "player", "squad"))]
+df <- df %>%
+  relocate(value_eur)
+
+###################################################################################################################
+# 
+# for (col in colnames(df)) {
+#   if (col %in% c("id", "season", "squad", "league", "player", "squad", "contract_signing", "elite_team")){
+#     print("skip")
+#   }else if(col %in% c("xg_net", "npxg_net", "xa_net")){
+#     print("skip because log 0")
+#   }else if(col %in% c("plus_minus_per90", "FW", "DF", "GK", "MF", "wc_cards_red", 
+#                       "xg_plus_minus_wowy", "xg_plus_minus_per90", "xg_plus_minus", 
+#                       "plus_minus", "plus_minus_wowy"
+#                       )){
+#     print("skip because not significant")
+#   } else{
+#   print(col)
+#   simple.fit = glm(formula = as.formula(paste0("value_eur~",col, "")), 
+#                    data = data, family = Gamma("log"))
+#   print(summary(simple.fit))
+# }
+# # plot(data[col],
+# #      log(data$value_eur)
+# # )
+# # abline(model)
+# }
+
+not_signif_features = c()
+for (col in colnames(df)) {
+  if (col %in% c("id", "season", "squad", "league", "player", "squad", "contract_signing", "elite_team")){
+    print("skip")
+  }else if(col %in% c("xg_net", "npxg_net", "xa_net")){
+    print("skip because log 0")
+  }else{
+    simple.fit = glm(formula = as.formula(paste0("value_eur~",col, "")), 
+                     data = data, family = Gamma("log"))
+    d <- data.frame(summary(simple.fit)$coef[summary(simple.fit)$coef[,4] <= .05, 4])[2,1]
+    if (is.na(d) | d > 0.01){
+        not_signif_features <- c(not_signif_features, col)
+    }else{
+      print(summary(simple.fit))
+    }
+    
+    
+  }
+}
+  
+not_signif_features <- not_signif_features[not_signif_features != "value_eur"]
+df <- df[, -which(names(df) %in% not_signif_features)]
+
+
+basic.fit = glm(value_eur ~ ., 
+                 data = df, family = Gamma("log"))
+
+print(summary(basic.fit))
+
+
+################################################################################
+get_aic <- function(model){
+  return(summary(model)$aic)
+}
+
+transform_log = list()
+
+
+for (col in colnames(df)) {
+  if (col == "value_eur"){next}
+  if (col == "rich_team"){next}
+  if (col == "best_age"){next}
+  if (col == "players_dribbled_past"){next}
+  if (col == "dribbles_completed_diff"){next}
+  
+  
+  log.aic = Inf
+  sqrt.aic = Inf
+  simple.aic = Inf
+  
+  tryCatch({
+    sqrt.fit = glm(formula = as.formula(paste0("value_eur~sqrt(",col, ")")), 
+                   data = df, family = Gamma("log"))
+    sqrt.aic = get_aic(sqrt.fit)
+
+  }, error=function(e){
+    print(col)
+  })
+  tryCatch({
+    log.fit = glm(formula = as.formula(paste0("value_eur~log(",col, " + 1)")), 
+                  data = df, family = Gamma("log"))
+    log.aic = get_aic(log.fit)
+
+  }, error=function(e){
+  })
+  tryCatch({
+    simple.fit = glm(formula = as.formula(paste0("value_eur~",col, "")), 
+                     data = df, family = Gamma("log"))
+    simple.aic = get_aic(simple.fit)
+    
+  }, error=function(e){
+    # simple.aic = Inf
+  })
+  
+    
+  
+  aics <- list(
+    sqrt = sqrt.aic,
+    log = log.aic,
+    simple = simple.aic
+  )
+  
+  name = names(which.min(unlist(aics)))  
+  if (name == "log"){
+    df[col] = log(df[col]+1)
+    transform_log[[col]] = "log"  
+    }else if(name == "sqrt"){
+    df[col] = sqrt(df[col])
+    transform_log[[col]] = "sqrt"  
+    
+  }else if(name == "simple"){
+    transform_log[[col]] = "simple"  
+  }
+}
+df <- replace_na(df)
+transformed.fit = glm(value_eur ~ ., 
+                data = df, family = Gamma("log"))
+
+print(summary(transformed.fit))
+
+
+
+
+
+# 
+# print(names(df))
+# 
+# 
+# # plot((df$), log(data$value_eur))
+# 
+# plot(sqrt(data$goals), log(data$value_eur))
+# 
+# hist(log(data$goals))
+# 
+# model <- glm(value_eur ~ best_age + I((pass_targets)) + sqrt(gca_passes_live) + I(sqrt(data$minutes)) 
+#              , 
+#              data = data, family = Gamma("log"))
+# summary(model)
+# 
+# 
+# model <- glm(value_eur ~ ., 
+#              data = data, family = Gamma("log"))
+# summary(model)re
+

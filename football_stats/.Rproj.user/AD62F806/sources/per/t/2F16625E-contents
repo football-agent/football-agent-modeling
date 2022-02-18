@@ -1,0 +1,65 @@
+s_au <- function(a, u, n){
+  if(sum(a != "x" && u != "x") > n){
+    return(1)
+  } else{
+    return(sum(a != "x" & u != "x")/n)
+  }
+    
+}
+
+w_au<- function(a, u, n){
+  wau <- cor(as.numeric(a[a != "x" & u != "x"]), as.numeric(u[a != "x" & u != "x"])) * s_au(a, u, n)
+  return(wau)
+  
+}
+
+
+## Beispiel:
+#> text = "A 5 7 9 10
+#+ B x 9 7 10
+#+ C 1 10 2 x
+#+ D 8 8 9 9
+#+ E x x 5 1
+#+ F 7 x x 3
+#+ G 9 9 8 x
+#+ H x 7 8 6
+# I 10 2 8 1
+#+ J 1 4 6 6"
+#
+#> p_ai(text = text, a = 4, Product = "G",number_of_users = 2, n = 7)
+#[1] 7.388827
+#
+
+
+p_ai <-  function(text, a, Product, number_of_users, n){
+  m <- read.table(text = text, header = F, sep = " ", row.names = 1)
+  cols <-   1:dim(m)[[2]]
+  cols <- cols[cols != a]
+  w <- c()
+  for(i in cols){
+  
+  w <- append(w, w_au(m[, paste0("V",  i + 1)], m[, paste0("V", a + 1)] ,n))
+  }
+  
+  Users <- sort(tail(order(w), number_of_users))
+  
+
+  # r_is <- m[Product, Users]
+  
+  r_a <- m[, paste0("V", a + 1)]
+  r_a <- as.numeric( r_a[r_a != "x"] )
+  p_ai <- mean(r_a)
+  
+  for(i in 1:length(largest)){
+
+    r_u <- m[, paste0("V", Users[i] + 1)]
+    r_u <- as.numeric( r_u[r_u != "x"] )
+    
+    p_ai <- p_ai + w[Users[i]] * (as.numeric(m[Product , paste0("V", Users[i] + 1)]) - mean(r_u)) / sum(w[Users])
+    
+    
+  }
+    
+  return(p_ai)
+
+}

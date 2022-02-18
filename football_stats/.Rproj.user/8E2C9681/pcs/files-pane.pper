@@ -1,0 +1,9 @@
+{
+    "path" : "~/football-agent-services/football_stats",
+    "sortOrder" : [
+        {
+            "ascending" : true,
+            "columnIndex" : 2
+        }
+    ]
+}

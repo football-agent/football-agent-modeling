@@ -1,0 +1,14 @@
+# table <- iris
+# table <- read.table(text = table, header = F, row.names = 1)
+
+table <- table[,1:4]
+colmeans <- colMeans(table)
+meanMatrix <- matrix(rep(colmeans, nrow(iris)), byrow = T,  nrow(iris))
+meanMatrix
+table <- table - meanMatrix
+
+cov <- cov(table)
+cov
+eigen <- eigen(cov)
+
+as.matrix(table) %*% eigen$vectors[,1:2]  + meanMatrix[,1:2]

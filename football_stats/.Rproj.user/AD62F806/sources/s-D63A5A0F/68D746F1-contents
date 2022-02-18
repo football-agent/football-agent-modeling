@@ -1,0 +1,57 @@
+two_sided_test <- function(
+  cols = NULL,
+  dims = NULL
+){
+  if(is.null(cols) || is.null(dims)){
+    return("cols is missing")
+  }
+  # 
+  # if(!String(cols)){
+  #   return("cols has to be a string element")
+  # }
+  
+  cols <- strsplit(cols, " ")
+  cols <- sapply(cols, as.numeric)
+  dim(cols) <- dims
+  
+  d <- cols[1,] - cols[2,] 
+  t <- mean(d)/(sd(d)/sqrt(dims[2]))
+  return(t)
+}
+
+paired_t_test <- function(
+  cols = NULL,
+  dims = NULL
+){
+  if(is.null(cols) || is.null(dims)){
+    return("cols is missing")
+  }
+  # 
+  # if(!String(cols)){
+  #   return("cols has to be a string element")
+  # }
+  
+  cols <- read.table(text = cols, header = F)
+  # cols <- sapply(cols, as.numeric)
+  cols <- cols[,dims]
+  
+  d <- cols[, 1] - cols[, 2] 
+  t <- mean(d)/(sd(d)/sqrt(dim(cols)[[1]]))
+  return(t)
+}
+
+welch_test <- function(
+  m1, m2, mu = 0
+){
+  
+  mean1 <- mean(m1)
+  mean2 <- mean(m2)
+  sd1 <- sd(m1)
+  sd2 <- sd(m2)
+  s <- sqrt(sd1^2/length(m1) + sd2^2/length(m2))
+  df <- s^4 / (sd1 ^4 /(length(m1)^2 * (length(m1) - 1)) + sd2 ^4 /(length(m2)^2 * (length(m2) - 1)))
+  
+  t_0 <- (mean1 - mean2 - mu) / s
+  
+  return(list(t_0, df))
+}

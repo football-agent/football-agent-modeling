@@ -1,0 +1,25 @@
+{
+    "id": "4EAE3790",
+    "path": "D:/WiSe2021/football-agent-services/football_stats/glm.R",
+    "project_path": "glm.R",
+    "type": "r_source",
+    "hash": "2701433232",
+    "contents": "",
+    "dirty": false,
+    "created": 1640825820795.0,
+    "source_on_save": false,
+    "relative_order": 12,
+    "properties": {
+        "tempName": "Untitled1",
+        "cursorPosition": "22,0",
+        "scrollLine": "5"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1640841870,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1640841870160,
+    "read_only": false,
+    "read_only_alternatives": []
+}

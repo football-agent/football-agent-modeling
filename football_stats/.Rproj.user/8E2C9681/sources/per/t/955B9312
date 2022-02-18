@@ -1,0 +1,22 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1643445145797.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "1773732287",
+    "id" : "955B9312",
+    "lastKnownWriteTime" : 1643600727,
+    "last_content_update" : 1643600727523,
+    "path" : "~/football-agent-services/football_stats/FW.R",
+    "project_path" : "FW.R",
+    "properties" : {
+        "cursorPosition" : "309,0",
+        "scrollLine" : "291"
+    },
+    "relative_order" : 1,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}

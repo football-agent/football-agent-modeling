@@ -1,0 +1,24 @@
+{
+    "id": "2F16625E",
+    "path": "D:/WiSe2021/BusinessAnalytics/weighted_correlations.R",
+    "project_path": null,
+    "type": "r_source",
+    "hash": "3930462637",
+    "contents": "",
+    "dirty": true,
+    "created": 1639782947158.0,
+    "source_on_save": false,
+    "relative_order": 7,
+    "properties": {
+        "cursorPosition": "1,9",
+        "scrollLine": "0"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1612702854,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1639783343398,
+    "read_only": false,
+    "read_only_alternatives": []
+}
